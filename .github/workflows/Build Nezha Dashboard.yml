@@ -1,4 +1,4 @@
-name: Build Nezha Dashboard
+name: Build and Push Docker Images
 
 on:
   push:
@@ -7,95 +7,24 @@ on:
       - master
     tags:
       - "v*"
-  workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+      - master
 
 env:
+  # 阿里云镜像仓库配置
   ALIYUN_REGISTRY: crpi-x68pqc6t5zexwzms.cn-guangzhou.personal.cr.aliyuncs.com
   ALIYUN_NAMESPACE: auto-reply-xianyu
-  NEZHA_IMAGE_NAME: nezha-dashboard
+  IMAGE_NAME: xianyu-auto-reply
 
 jobs:
-  build-nezha:
-    runs-on: ubuntu-latest
-    container:
-      image: goreleaser/goreleaser-cross:v1.24
-    
-    steps:
-    - name: Install dependencies
-      run: |
-        apt update && apt install unzip curl -y
-        wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/bin/yq
-        chmod +x /usr/bin/yq
-
-    - name: Configure git
-      run: git config --global --add safe.directory /__w/nezhadiy/nezhadiy
-
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Set up Go
-      uses: actions/setup-go@v5
-      with:
-        go-version: "1.24.x"
-
-    - name: Prepare frontends (if exists)
-      run: |
-        if [ -f "./script/fetch-frontends.sh" ]; then
-          chmod +x ./script/fetch-frontends.sh && ./script/fetch-frontends.sh
-        else
-          echo "Frontend script not found, skipping..."
-        fi
-
-    - name: Generate swagger docs (if needed)
-      run: |
-        if [ -f "./cmd/dashboard/main.go" ]; then
-          go install github.com/swaggo/swag/cmd/swag@latest
-          swag init --pd -d . -g ./cmd/dashboard/main.go -o ./cmd/dashboard/docs --parseGoList=false
-        else
-          echo "Dashboard main.go not found, skipping swagger generation..."
-        fi
-
-    - name: Build nezha dashboard
-      run: |
-        if [ -f "./cmd/dashboard/main.go" ]; then
-          # 构建多架构二进制文件
-          GOOS=linux GOARCH=amd64 go build -o dist/dashboard-linux-amd64 ./cmd/dashboard/main.go
-          GOOS=linux GOARCH=arm64 go build -o dist/dashboard-linux-arm64 ./cmd/dashboard/main.go
-          
-          # 设置执行权限
-          chmod +x dist/dashboard-*
-          
-          echo "Build completed successfully"
-          ls -la dist/
-        else
-          echo "Dashboard source not found, using existing binary..."
-          mkdir -p dist
-          if [ -f "./dashboard/app" ]; then
-            cp ./dashboard/app dist/dashboard-linux-amd64
-            cp ./dashboard/app dist/dashboard-linux-arm64
-            chmod +x dist/dashboard-*
-          fi
-        fi
-
-    - name: Upload build artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: nezha-dashboard-binaries
-        path: dist/dashboard-*
-
-  docker-build:
-    needs: build-nezha
+  build-and-push:
     runs-on: ubuntu-latest
     
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-
-    - name: Download build artifacts
-      uses: actions/download-artifact@v4
-      with:
-        name: nezha-dashboard-binaries
-        path: ./dist
 
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
@@ -108,10 +37,13 @@ jobs:
       uses: docker/metadata-action@v5
       with:
         images: |
-          ${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${{ env.NEZHA_IMAGE_NAME }}
+          ${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${{ env.IMAGE_NAME }}
         tags: |
           type=ref,event=branch
+          type=ref,event=pr
           type=semver,pattern={{version}}
+          type=semver,pattern={{major}}.{{minor}}
+          type=semver,pattern={{major}}
           type=raw,value=latest,enable={{is_default_branch}}
 
     - name: Log in to Aliyun Container Registry
@@ -121,44 +53,17 @@ jobs:
         username: ${{ secrets.ALIYUN_USERNAME }}
         password: ${{ secrets.ALIYUN_PASSWORD }}
 
-    - name: Create Dockerfile for Nezha
-      run: |
-        cat > Dockerfile.nezha << 'EOF'
-        FROM alpine AS certs
-        RUN apk update && apk add ca-certificates
-
-        FROM busybox:stable-musl
-
-        ARG TARGETOS=linux
-        ARG TARGETARCH
-
-        COPY --from=certs /etc/ssl/certs /etc/ssl/certs
-
-        # 创建启动脚本
-        RUN echo '#!/bin/sh' > /entrypoint.sh && \
-            echo 'cd /dashboard' >> /entrypoint.sh && \
-            echo 'exec ./app "$@"' >> /entrypoint.sh && \
-            chmod +x /entrypoint.sh
-
-        WORKDIR /dashboard
-        COPY dist/dashboard-${TARGETOS}-${TARGETARCH} ./app
-        RUN chmod +x ./app
-
-        VOLUME ["/dashboard/data"]
-        EXPOSE 8008
-        ARG TZ=Asia/Shanghai
-        ENV TZ=$TZ
-        ENTRYPOINT ["/entrypoint.sh"]
-        EOF
-
-    - name: Build and push Nezha Docker image
+    - name: Build and push Docker image
       uses: docker/build-push-action@v5
       with:
         context: .
-        file: ./Dockerfile.nezha
+        file: ./Dockerfile
         platforms: linux/amd64,linux/arm64
         push: true
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
+
+    - name: Image digest
+      run: echo ${{ steps.build.outputs.digest }}
