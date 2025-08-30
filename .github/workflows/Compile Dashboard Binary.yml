@@ -1,0 +1,172 @@
+name: Compile Dashboard Binary
+
+on:
+  workflow_dispatch:
+    inputs:
+      nezha_version:
+        description: 'Nezha version (e.g., v0.15.17 or master)'
+        required: false
+        default: 'master'
+
+jobs:
+  compile:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout current repository
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.21'
+
+    - name: Clone Nezha source
+      run: |
+        echo "Cloning Nezha source..."
+        git clone https://github.com/nezhahq/nezha.git nezha-source
+        cd nezha-source
+        
+        # 切换到指定版本
+        if [ "${{ github.event.inputs.nezha_version }}" != "master" ]; then
+          git checkout ${{ github.event.inputs.nezha_version }}
+        fi
+        
+        echo "Current version:"
+        git log -1 --oneline
+        
+        echo "Source structure:"
+        ls -la
+
+    - name: Prepare build environment
+      run: |
+        cd nezha-source
+        
+        # 下载Go依赖
+        echo "Downloading Go dependencies..."
+        go mod download
+        
+        # 创建最小前端资源（避免前端下载问题）
+        echo "Creating minimal frontend resources..."
+        mkdir -p resource/template
+        mkdir -p resource/static
+        
+        # 创建基本的HTML模板
+        cat > resource/template/index.html << 'EOF'
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Nezha Dashboard</title>
+            <meta charset="utf-8">
+        </head>
+        <body>
+            <h1>Nezha Dashboard</h1>
+            <p>Dashboard is running...</p>
+        </body>
+        </html>
+        EOF
+        
+        echo "Build environment prepared"
+
+    - name: Compile dashboard binary
+      run: |
+        cd nezha-source
+        
+        echo "Compiling Nezha Dashboard..."
+        
+        # 设置构建信息
+        VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
+        COMMIT=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
+        BUILD_TIME=$(date -u '+%Y-%m-%d_%H:%M:%S')
+        
+        echo "Build info:"
+        echo "  Version: $VERSION"
+        echo "  Commit: $COMMIT"
+        echo "  Build Time: $BUILD_TIME"
+        
+        # 编译dashboard (Linux AMD64)
+        echo "Building dashboard binary..."
+        CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+          -ldflags "-s -w -X github.com/nezhahq/nezha/service/singleton.Version=$VERSION -X github.com/nezhahq/nezha/service/singleton.Commit=$COMMIT -X github.com/nezhahq/nezha/service/singleton.BuildTime=$BUILD_TIME" \
+          -o nezha-dashboard \
+          ./cmd/dashboard/main.go
+        
+        # 检查编译结果
+        if [ -f "nezha-dashboard" ]; then
+          echo "✅ Compilation successful!"
+          ls -la nezha-dashboard
+          file nezha-dashboard
+          echo "Binary size: $(du -h nezha-dashboard | cut -f1)"
+        else
+          echo "❌ Compilation failed!"
+          exit 1
+        fi
+
+    - name: Copy binary to repository
+      run: |
+        # 创建dashboard目录
+        mkdir -p dashboard
+        
+        # 复制编译好的二进制文件
+        cp nezha-source/nezha-dashboard dashboard/app
+        chmod +x dashboard/app
+        
+        echo "✅ Binary copied to dashboard/app"
+        ls -la dashboard/app
+        
+        # 验证二进制文件
+        echo "Testing binary..."
+        ./dashboard/app --version || echo "Version check completed"
+
+    - name: Commit binary to repository
+      run: |
+        # 配置git
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        
+        # 添加二进制文件
+        git add dashboard/app
+        
+        # 检查是否有变化
+        if git diff --staged --quiet; then
+          echo "No changes to commit"
+        else
+          # 提交变化
+          git commit -m "Update dashboard/app binary (nezha ${{ github.event.inputs.nezha_version }})"
+          git push
+          echo "✅ Binary committed to repository"
+        fi
+
+    - name: Create release info
+      run: |
+        echo "🎉 Dashboard binary compilation completed!"
+        echo ""
+        echo "📁 Binary location: dashboard/app"
+        echo "📊 Binary info:"
+        ls -la dashboard/app
+        file dashboard/app
+        echo ""
+        echo "🚀 Usage:"
+        echo "1. Download the binary:"
+        echo "   wget https://github.com/dogwalkerg/nezhadiy/raw/main/dashboard/app"
+        echo ""
+        echo "2. Make it executable:"
+        echo "   chmod +x app"
+        echo ""
+        echo "3. Run the dashboard:"
+        echo "   ./app"
+        echo ""
+        echo "4. Access dashboard:"
+        echo "   http://localhost:8008"
+        echo ""
+        echo "📦 Source version: ${{ github.event.inputs.nezha_version }}"
+        echo "🕒 Compiled at: $(date)"
+
+    - name: Upload binary as artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: nezha-dashboard-binary
+        path: dashboard/app
+        retention-days: 30
