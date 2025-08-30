@@ -1,4 +1,4 @@
-name: Build and Push Docker Images
+name: Build Nezha Dashboard (Simple)
 
 on:
   push:
@@ -7,19 +7,15 @@ on:
       - master
     tags:
       - "v*"
-  pull_request:
-    branches:
-      - main
-      - master
+  workflow_dispatch:
 
 env:
-  # 阿里云镜像仓库配置
   ALIYUN_REGISTRY: crpi-x68pqc6t5zexwzms.cn-guangzhou.personal.cr.aliyuncs.com
   ALIYUN_NAMESPACE: auto-reply-xianyu
-  IMAGE_NAME: xianyu-auto-reply
+  NEZHA_IMAGE_NAME: nezha-dashboard
 
 jobs:
-  build-and-push:
+  docker-build:
     runs-on: ubuntu-latest
     
     steps:
@@ -37,13 +33,10 @@ jobs:
       uses: docker/metadata-action@v5
       with:
         images: |
-          ${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${{ env.IMAGE_NAME }}
+          ${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${{ env.NEZHA_IMAGE_NAME }}
         tags: |
           type=ref,event=branch
-          type=ref,event=pr
           type=semver,pattern={{version}}
-          type=semver,pattern={{major}}.{{minor}}
-          type=semver,pattern={{major}}
           type=raw,value=latest,enable={{is_default_branch}}
 
     - name: Log in to Aliyun Container Registry
@@ -53,11 +46,62 @@ jobs:
         username: ${{ secrets.ALIYUN_USERNAME }}
         password: ${{ secrets.ALIYUN_PASSWORD }}
 
-    - name: Build and push Docker image
+    - name: Prepare nezha files
+      run: |
+        # 创建dist目录并复制现有的app文件
+        mkdir -p dist
+
+        # 如果dashboard目录下有app文件，复制它
+        if [ -f "./dashboard/app" ]; then
+          echo "Found existing dashboard app, copying..."
+          # 直接复制为app，避免架构变量问题
+          cp ./dashboard/app dist/app
+          chmod +x dist/app
+          echo "Dashboard app prepared successfully"
+        else
+          echo "No dashboard app found, this build will fail"
+          exit 1
+        fi
+
+        # 显示文件信息
+        ls -la dist/
+        file dist/app || echo "File command not available"
+
+    - name: Create Dockerfile for Nezha
+      run: |
+        cat > Dockerfile.nezha << 'EOF'
+        FROM alpine AS certs
+        RUN apk update && apk add ca-certificates
+
+        FROM busybox:stable-musl
+
+        COPY --from=certs /etc/ssl/certs /etc/ssl/certs
+
+        # 创建启动脚本
+        RUN echo '#!/bin/sh' > /entrypoint.sh && \
+            echo 'echo "Starting Nezha Dashboard..."' >> /entrypoint.sh && \
+            echo 'cd /dashboard' >> /entrypoint.sh && \
+            echo 'exec ./app "$@"' >> /entrypoint.sh && \
+            chmod +x /entrypoint.sh
+
+        WORKDIR /dashboard
+
+        # 直接复制app文件，避免架构变量问题
+        COPY dist/app ./app
+        RUN chmod +x ./app
+
+        VOLUME ["/dashboard/data"]
+        EXPOSE 8008
+        ARG TZ=Asia/Shanghai
+        ENV TZ=$TZ
+        ENTRYPOINT ["/entrypoint.sh"]
+        EOF
+
+    - name: Build and push Nezha Docker image
       uses: docker/build-push-action@v5
       with:
         context: .
-        file: ./Dockerfile
+        file: ./Dockerfile.nezha
         platforms: linux/amd64,linux/arm64
         push: true
         tags: ${{ steps.meta.outputs.tags }}
@@ -65,5 +109,10 @@ jobs:
         cache-from: type=gha
         cache-to: type=gha,mode=max
 
-    - name: Image digest
-      run: echo ${{ steps.build.outputs.digest }}
+    - name: Output image info
+      run: |
+        echo "✅ Nezha Dashboard image built and pushed successfully!"
+        echo "📦 Image: ${{ steps.meta.outputs.tags }}"
+        echo "🚀 Usage:"
+        echo "docker pull ${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${{ env.NEZHA_IMAGE_NAME }}:latest"
+        echo "docker run -d -p 8008:8008 -v \$(pwd)/nezha-data:/dashboard/data ${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${{ env.NEZHA_IMAGE_NAME }}:latest"
