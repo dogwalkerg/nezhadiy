@@ -42,7 +42,7 @@ jobs:
     name: Release to Aliyun ACR
     env:
       ALIYUN_REGISTRY: crpi-x68pqc6t5zexwzms.cn-guangzhou.personal.cr.aliyuncs.com
-      IMAGE_NAME: xianyuauto/xianyu
+      IMAGE_NAME: auto-reply-xianyu/xianyu-auto-reply
     steps:
       - uses: actions/checkout@v4
 
