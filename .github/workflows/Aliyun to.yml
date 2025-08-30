@@ -1,0 +1,67 @@
+name: Aliyun to
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  buildx:
+    runs-on: ubuntu-latest
+    env:
+      VERSION: v1.13.2
+      # 阿里云个人版容器镜像服务公网地址
+      ALIYUN_REGISTRY: crpi-x68pqc6t5zexwzms.cn-guangzhou.personal.cr.aliyuncs.com
+      # 完整的镜像名称（包含命名空间和仓库名）
+      FULL_IMAGE_NAME: crpi-x68pqc6t5zexwzms.cn-guangzhou.personal.cr.aliyuncs.com/auto-reply-xianyu/xianyu-auto-reply
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        
+      - name: Debug - Show image info
+        run: |
+          echo "Registry: ${{ env.ALIYUN_REGISTRY }}"
+          echo "Full Image Name: ${{ env.FULL_IMAGE_NAME }}"
+          echo "Version: ${{ env.VERSION }}"
+          
+      - name: Login to Aliyun Personal Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.ALIYUN_REGISTRY }}
+          username: ${{ secrets.ALIYUN_USERNAME }}
+          password: ${{ secrets.ALIYUN_PASSWORD }}
+          
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        
+      - name: Extract tag name
+        run: |
+          if [[ $GITHUB_REF == refs/tags/* ]]; then
+            TAG_NAME=$(echo ${GITHUB_REF#refs/tags/})
+          elif [[ $GITHUB_REF == refs/heads/* ]]; then
+            TAG_NAME=$(echo ${GITHUB_REF#refs/heads/})
+          else
+            TAG_NAME="${{ env.VERSION }}"
+          fi
+          echo "TAG_NAME=$TAG_NAME" >> $GITHUB_ENV
+          echo "Using tag: $TAG_NAME"
+          
+      - name: Build and push to Aliyun ACR
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ env.FULL_IMAGE_NAME }}:${{ env.TAG_NAME }}
+            ${{ env.FULL_IMAGE_NAME }}:latest
+          cache-from: type=registry,ref=${{ env.FULL_IMAGE_NAME }}:buildcache
+          cache-to: type=registry,ref=${{ env.FULL_IMAGE_NAME }}:buildcache,mode=max
+          
+      - name: Verify pushed images
+        run: |
+          echo "成功推送以下镜像到阿里云个人版容器镜像服务："
+          echo "${{ env.FULL_IMAGE_NAME }}:${{ env.TAG_NAME }}"
+          echo "${{ env.FULL_IMAGE_NAME }}:latest"
